@@ -17,7 +17,6 @@ import {
 
 import { type useSpreadsheet } from '@desktop-client/hooks/useSpreadsheet';
 import { aqlQuery } from '@desktop-client/queries/aqlQuery';
-import { ReportOptions } from '@desktop-client/components/reports/ReportOptions';
 
 type Balance = {
   date: string;
@@ -42,9 +41,14 @@ export function createSpreadsheet(
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
-    // Use the same pattern as custom reports for interval handling
-    const intervalGroup = getGroupByExpression(interval);
-    const intervalFilter = getIntervalFilter(interval);
+    // Handle different intervals like cash flow does - simpler approach
+    const isDaily = interval === 'Daily';
+    const isWeekly = interval === 'Weekly';
+    const isYearly = interval === 'Yearly';
+    
+    // For daily and weekly, we need to work with actual dates, not month transforms
+    const startDate = isDaily || isWeekly ? start : monthUtils.firstDayOfMonth(start);
+    const endDate = isDaily || isWeekly ? end : monthUtils.lastDayOfMonth(end);
 
     const data = await Promise.all(
       accounts.map(async acct => {
@@ -54,7 +58,7 @@ export function createSpreadsheet(
               .filter({
                 [conditionsOpKey]: filters,
                 account: acct.id,
-                date: { $transform: intervalFilter, $lt: start },
+                date: { $lt: startDate },
               })
               .calculate({ $sum: '$amount' }),
           ).then(({ data }) => data),
@@ -67,20 +71,28 @@ export function createSpreadsheet(
               .filter({
                 account: acct.id,
                 $and: [
-                  { date: { $transform: intervalFilter, $gte: start } },
-                  { date: { $transform: intervalFilter, $lte: end } },
+                  { date: { $gte: startDate } },
+                  { date: { $lte: endDate } },
                 ],
               })
-              .groupBy(intervalGroup)
+              .groupBy(
+                isDaily || isWeekly ? 'date' :
+                isYearly ? { $year: '$date' } :
+                { $month: '$date' }
+              )
               .select([
-                { date: intervalGroup },
+                { 
+                  date: isDaily || isWeekly ? 'date' :
+                        isYearly ? { $year: '$date' } :
+                        { $month: '$date' }
+                },
                 { amount: { $sum: '$amount' } },
               ]),
           ).then(({ data }) => data),
         ]);
 
-        // Handle Weekly interval by transforming dates like custom reports do
-        const transformedBalances = interval === 'Weekly' 
+        // Handle Weekly interval by transforming dates
+        const transformedBalances = isWeekly 
           ? balances.map(b => ({
               ...b,
               date: monthUtils.weekFromDate(b.date, '0'),
@@ -99,22 +111,19 @@ export function createSpreadsheet(
   };
 }
 
-function getGroupByExpression(interval: string) {
-  const intervalGroup =
-    interval === 'Monthly'
-      ? { $month: '$date' }
-      : interval === 'Yearly'
-        ? { $year: '$date' }
-        : { $day: '$date' };
-  return intervalGroup;
-}
-
-function getIntervalFilter(interval: string) {
-  const intervalFilter =
-    interval === 'Weekly'
-      ? '$day'
-      : '$' + (ReportOptions.intervalMap.get(interval)?.toLowerCase() || 'month');
-  return intervalFilter;
+// Helper function to get the correct date ranges based on interval
+function getDateRanges(start: string, end: string, interval: string) {
+  switch (interval) {
+    case 'Daily':
+      return monthUtils.dayRangeInclusive(start, end);
+    case 'Weekly':
+      return monthUtils.weekRangeInclusive(start, end, '0');
+    case 'Yearly':
+      return monthUtils.yearRangeInclusive(start, end);
+    case 'Monthly':
+    default:
+      return monthUtils.rangeInclusive(start, end);
+  }
 }
 
 
@@ -130,13 +139,8 @@ function recalculate(
   locale: Locale,
   interval: string = 'Monthly',
 ) {
-  // Use the same interval range logic as custom reports
-  const intervals =
-    interval === 'Weekly'
-      ? monthUtils.weekRangeInclusive(start, end, '0')
-      : monthUtils[
-          ReportOptions.intervalRange.get(interval) || 'rangeInclusive'
-        ](start, end);
+  // Get the correct date intervals
+  const intervals = getDateRanges(start, end, interval);
 
   const accountBalances = data.map(account => {
     // Start off with the balance at that point in time
@@ -185,11 +189,12 @@ function recalculate(
       hasNegative = true;
     }
 
-    const x = d.parseISO(
-      interval === 'Yearly' ? intervalItem + '-01-01' :
-      interval === 'Daily' ? intervalItem :
-      intervalItem + '-01'
-    );
+    // Parse dates correctly based on interval type
+    const x = interval === 'Daily' || interval === 'Weekly' 
+      ? d.parseISO(intervalItem)
+      : interval === 'Yearly'
+      ? d.parseISO(intervalItem + '-01-01')
+      : d.parseISO(intervalItem + '-01');
     const change = last ? total - amountToInteger(last.y) : 0;
 
     if (arr.length === 0) {
