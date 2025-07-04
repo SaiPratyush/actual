@@ -46,9 +46,9 @@ export function createSpreadsheet(
     const isWeekly = interval === 'Weekly';
     const isYearly = interval === 'Yearly';
     
-    // For daily and weekly, we need to work with actual dates, not month transforms
-    const startDate = isDaily || isWeekly ? start : monthUtils.firstDayOfMonth(start);
-    const endDate = isDaily || isWeekly ? end : monthUtils.lastDayOfMonth(end);
+    // Always convert to full date format for database queries
+    const startDate = monthUtils.firstDayOfMonth(start);
+    const endDate = monthUtils.lastDayOfMonth(end);
 
     const data = await Promise.all(
       accounts.map(async acct => {
@@ -107,7 +107,7 @@ export function createSpreadsheet(
       }),
     );
 
-    setData(recalculate(data, start, end, locale, interval));
+    setData(recalculate(data, startDate, endDate, locale, interval));
   };
 }
 
@@ -122,7 +122,11 @@ function getDateRanges(start: string, end: string, interval: string) {
       return monthUtils.yearRangeInclusive(start, end);
     case 'Monthly':
     default:
-      return monthUtils.rangeInclusive(start, end);
+      // For monthly, convert back to month format
+      return monthUtils.rangeInclusive(
+        monthUtils.getMonth(start), 
+        monthUtils.getMonth(end)
+      );
   }
 }
 
