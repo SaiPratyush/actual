@@ -300,6 +300,7 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
         <NetWorthGraph
           graphData={data.graphData}
           showTooltip={!isNarrowWidth}
+          interval={interval}
         />
 
         <View style={{ marginTop: 30, userSelect: 'none' }}>

@@ -130,6 +130,51 @@ function getDateRanges(start: string, end: string, interval: string) {
   }
 }
 
+// Helper function to apply smoothing to data for high-frequency intervals
+function applySmoothingToData(
+  data: Array<{
+    x: string;
+    y: number;
+    assets: string;
+    debt: string;
+    change: string;
+    networth: string;
+    date: string;
+  }>,
+  interval: string,
+  windowSize: number = 7, // Default 7-day moving average
+) {
+  if (interval !== 'Daily' && interval !== 'Weekly') {
+    return data; // No smoothing for monthly/yearly
+  }
+
+  if (data.length <= windowSize) {
+    return data; // Not enough data points for smoothing
+  }
+
+  return data.map((item, index) => {
+    // For smoothing, we only smooth the y value (net worth), keep other fields as-is
+    const startIndex = Math.max(0, index - Math.floor(windowSize / 2));
+    const endIndex = Math.min(data.length - 1, index + Math.floor(windowSize / 2));
+    
+    let sum = 0;
+    let count = 0;
+    
+    for (let i = startIndex; i <= endIndex; i++) {
+      sum += data[i].y;
+      count++;
+    }
+    
+    const smoothedValue = sum / count;
+    
+    return {
+      ...item,
+      y: smoothedValue,
+      networth: integerToCurrency(amountToInteger(smoothedValue)),
+    };
+  });
+}
+
 
 
 function recalculate(
@@ -239,9 +284,12 @@ function recalculate(
     return arr;
   }, []);
 
+  // Apply smoothing to daily and weekly data
+  const smoothedData = applySmoothingToData(graphData, interval);
+
   return {
     graphData: {
-      data: graphData,
+      data: smoothedData,
       hasNegative,
       start,
       end,
