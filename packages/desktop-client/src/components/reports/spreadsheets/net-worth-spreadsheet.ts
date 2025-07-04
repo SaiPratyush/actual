@@ -17,6 +17,7 @@ import {
 
 import { type useSpreadsheet } from '@desktop-client/hooks/useSpreadsheet';
 import { aqlQuery } from '@desktop-client/queries/aqlQuery';
+import { ReportOptions } from '@desktop-client/components/reports/ReportOptions';
 
 type Balance = {
   date: string;
@@ -41,6 +42,10 @@ export function createSpreadsheet(
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
+    // Use the same pattern as custom reports for interval handling
+    const intervalGroup = getGroupByExpression(interval);
+    const intervalFilter = getIntervalFilter(interval);
+
     const data = await Promise.all(
       accounts.map(async acct => {
         const [starting, balances]: [number, Balance[]] = await Promise.all([
@@ -49,7 +54,7 @@ export function createSpreadsheet(
               .filter({
                 [conditionsOpKey]: filters,
                 account: acct.id,
-                date: { $lt: getIntervalStartDate(start, interval) },
+                date: { $transform: intervalFilter, $lt: start },
               })
               .calculate({ $sum: '$amount' }),
           ).then(({ data }) => data),
@@ -62,21 +67,29 @@ export function createSpreadsheet(
               .filter({
                 account: acct.id,
                 $and: [
-                  { date: { $gte: getIntervalStartDate(start, interval) } },
-                  { date: { $lte: getIntervalEndDate(end, interval) } },
+                  { date: { $transform: intervalFilter, $gte: start } },
+                  { date: { $transform: intervalFilter, $lte: end } },
                 ],
               })
-              .groupBy(getGroupByExpression(interval))
+              .groupBy(intervalGroup)
               .select([
-                { date: getGroupByExpression(interval) },
+                { date: intervalGroup },
                 { amount: { $sum: '$amount' } },
               ]),
           ).then(({ data }) => data),
         ]);
 
+        // Handle Weekly interval by transforming dates like custom reports do
+        const transformedBalances = interval === 'Weekly' 
+          ? balances.map(b => ({
+              ...b,
+              date: monthUtils.weekFromDate(b.date, '0'),
+            }))
+          : balances;
+
         return {
           id: acct.id,
-          balances: keyBy(balances, 'date'),
+          balances: keyBy(transformedBalances, 'date'),
           starting,
         };
       }),
@@ -87,46 +100,24 @@ export function createSpreadsheet(
 }
 
 function getGroupByExpression(interval: string) {
-  switch (interval) {
-    case 'Daily':
-      return { $day: '$date' }; // This groups by full date: YYYY-MM-DD
-    case 'Weekly':
-      return { $week: '$date' };
-    case 'Yearly':
-      return { $year: '$date' };
-    case 'Monthly':
-    default:
-      return { $month: '$date' };
-  }
+  const intervalGroup =
+    interval === 'Monthly'
+      ? { $month: '$date' }
+      : interval === 'Yearly'
+        ? { $year: '$date' }
+        : { $day: '$date' };
+  return intervalGroup;
 }
 
-function getIntervalStartDate(date: string, interval: string): string {
-  switch (interval) {
-    case 'Daily':
-      return date; // For daily, use the exact date
-    case 'Weekly':
-      return monthUtils.weekFromDate(date, '0'); // Start of week
-    case 'Yearly':
-      return monthUtils.getYearStart(date);
-    case 'Monthly':
-    default:
-      return monthUtils.firstDayOfMonth(date);
-  }
+function getIntervalFilter(interval: string) {
+  const intervalFilter =
+    interval === 'Weekly'
+      ? '$day'
+      : '$' + (ReportOptions.intervalMap.get(interval)?.toLowerCase() || 'month');
+  return intervalFilter;
 }
 
-function getIntervalEndDate(date: string, interval: string): string {
-  switch (interval) {
-    case 'Daily':
-      return date; // For daily, use the exact date
-    case 'Weekly':
-      return monthUtils.getWeekEnd(date, '0'); // End of week
-    case 'Yearly':
-      return monthUtils.getYearEnd(date);
-    case 'Monthly':
-    default:
-      return monthUtils.lastDayOfMonth(date);
-  }
-}
+
 
 function recalculate(
   data: Array<{
@@ -139,7 +130,13 @@ function recalculate(
   locale: Locale,
   interval: string = 'Monthly',
 ) {
-  const intervals = getIntervalRange(start, end, interval);
+  // Use the same interval range logic as custom reports
+  const intervals =
+    interval === 'Weekly'
+      ? monthUtils.weekRangeInclusive(start, end, '0')
+      : monthUtils[
+          ReportOptions.intervalRange.get(interval) || 'rangeInclusive'
+        ](start, end);
 
   const accountBalances = data.map(account => {
     // Start off with the balance at that point in time
@@ -188,7 +185,11 @@ function recalculate(
       hasNegative = true;
     }
 
-    const x = parseIntervalDate(intervalItem, interval);
+    const x = d.parseISO(
+      interval === 'Yearly' ? intervalItem + '-01-01' :
+      interval === 'Daily' ? intervalItem :
+      intervalItem + '-01'
+    );
     const change = last ? total - amountToInteger(last.y) : 0;
 
     if (arr.length === 0) {
@@ -196,14 +197,26 @@ function recalculate(
     }
     endNetWorth = total;
 
+    const displayFormat = 
+      interval === 'Daily' ? 'MM/dd' :
+      interval === 'Weekly' ? 'MM/dd' :
+      interval === 'Yearly' ? 'yyyy' :
+      "MMM ''yy"; // Monthly default
+
+    const tooltipFormat = 
+      interval === 'Daily' ? 'MMMM d, yyyy' :
+      interval === 'Weekly' ? 'MMM d, yyyy' :
+      interval === 'Yearly' ? 'yyyy' :
+      'MMMM yyyy'; // Monthly default
+
     arr.push({
-      x: formatIntervalForDisplay(x, interval, locale),
+      x: d.format(x, displayFormat, { locale }),
       y: integerToAmount(total),
       assets: integerToCurrency(assets),
       debt: `-${integerToCurrency(debt)}`,
       change: integerToCurrency(change),
       networth: integerToCurrency(total),
-      date: formatIntervalForTooltip(x, interval, locale),
+      date: d.format(x, tooltipFormat, { locale }),
     });
 
     arr.forEach(item => {
@@ -229,60 +242,4 @@ function recalculate(
     lowestNetWorth,
     highestNetWorth,
   };
-}
-
-function getIntervalRange(start: string, end: string, interval: string): string[] {
-  switch (interval) {
-    case 'Daily':
-      return monthUtils.dayRangeInclusive(start, end);
-    case 'Weekly':
-      return monthUtils.weekRangeInclusive(start, end, '0');
-    case 'Yearly':
-      return monthUtils.yearRangeInclusive(start, end);
-    case 'Monthly':
-    default:
-      return monthUtils.rangeInclusive(start, end);
-  }
-}
-
-function parseIntervalDate(intervalItem: string, interval: string): Date {
-  switch (interval) {
-    case 'Daily':
-      return d.parseISO(intervalItem);
-    case 'Weekly':
-      return d.parseISO(intervalItem);
-    case 'Yearly':
-      return d.parseISO(intervalItem + '-01-01');
-    case 'Monthly':
-    default:
-      return d.parseISO(intervalItem + '-01');
-  }
-}
-
-function formatIntervalForDisplay(date: Date, interval: string, locale: Locale): string {
-  switch (interval) {
-    case 'Daily':
-      return d.format(date, 'MM/dd', { locale });
-    case 'Weekly':
-      return d.format(date, 'MM/dd', { locale });
-    case 'Yearly':
-      return d.format(date, 'yyyy', { locale });
-    case 'Monthly':
-    default:
-      return d.format(date, "MMM ''yy", { locale });
-  }
-}
-
-function formatIntervalForTooltip(date: Date, interval: string, locale: Locale): string {
-  switch (interval) {
-    case 'Daily':
-      return d.format(date, 'MMMM d, yyyy', { locale });
-    case 'Weekly':
-      return d.format(date, 'MMM d, yyyy', { locale });
-    case 'Yearly':
-      return d.format(date, 'yyyy', { locale });
-    case 'Monthly':
-    default:
-      return d.format(date, 'MMMM yyyy', { locale });
-  }
 }
