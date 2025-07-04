@@ -105,8 +105,9 @@ function NetWorthInner({ widget }: NetWorthInnerProps) {
         conditionsOp,
         locale,
         interval,
+        firstDayOfWeekIdx,
       ),
-    [start, end, accounts, conditions, conditionsOp, locale, interval],
+    [start, end, accounts, conditions, conditionsOp, locale, interval, firstDayOfWeekIdx],
   );
   const data = useReport('net_worth', reportParams);
   useEffect(() => {

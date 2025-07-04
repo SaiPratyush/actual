@@ -31,6 +31,7 @@ export function createSpreadsheet(
   conditionsOp: 'and' | 'or' = 'and',
   locale: Locale,
   interval: string = 'Monthly',
+  firstDayOfWeekIdx: string = '0',
 ) {
   return async (
     spreadsheet: ReturnType<typeof useSpreadsheet>,
@@ -41,7 +42,7 @@ export function createSpreadsheet(
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
-    // Handle different intervals like cash flow does - simpler approach
+    // Handle different intervals following the pattern from other reports
     const isDaily = interval === 'Daily';
     const isWeekly = interval === 'Weekly';
     const isYearly = interval === 'Yearly';
@@ -76,6 +77,7 @@ export function createSpreadsheet(
                 ],
               })
               .groupBy(
+                // For weekly, use daily grouping and transform later (like other reports)
                 isDaily || isWeekly ? 'date' :
                 isYearly ? { $year: '$date' } :
                 { $month: '$date' }
@@ -91,11 +93,11 @@ export function createSpreadsheet(
           ).then(({ data }) => data),
         ]);
 
-        // Handle Weekly interval by transforming dates
+        // Handle Weekly interval by transforming dates (same pattern as other reports)
         const transformedBalances = isWeekly 
           ? balances.map(b => ({
               ...b,
-              date: monthUtils.weekFromDate(b.date, '0'),
+              date: monthUtils.weekFromDate(b.date, firstDayOfWeekIdx),
             }))
           : balances;
 
@@ -107,17 +109,17 @@ export function createSpreadsheet(
       }),
     );
 
-    setData(recalculate(data, startDate, endDate, locale, interval));
+    setData(recalculate(data, startDate, endDate, locale, interval, firstDayOfWeekIdx));
   };
 }
 
 // Helper function to get the correct date ranges based on interval
-function getDateRanges(start: string, end: string, interval: string) {
+function getDateRanges(start: string, end: string, interval: string, firstDayOfWeekIdx: string) {
   switch (interval) {
     case 'Daily':
       return monthUtils.dayRangeInclusive(start, end);
     case 'Weekly':
-      return monthUtils.weekRangeInclusive(start, end, '0');
+      return monthUtils.weekRangeInclusive(start, end, firstDayOfWeekIdx);
     case 'Yearly':
       return monthUtils.yearRangeInclusive(start, end);
     case 'Monthly':
@@ -187,9 +189,10 @@ function recalculate(
   end: string,
   locale: Locale,
   interval: string = 'Monthly',
+  firstDayOfWeekIdx: string = '0',
 ) {
   // Get the correct date intervals
-  const intervals = getDateRanges(start, end, interval);
+  const intervals = getDateRanges(start, end, interval, firstDayOfWeekIdx);
 
   const accountBalances = data.map(account => {
     // Start off with the balance at that point in time
