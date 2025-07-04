@@ -30,6 +30,7 @@ export function createSpreadsheet(
   conditions: RuleConditionEntity[] = [],
   conditionsOp: 'and' | 'or' = 'and',
   locale: Locale,
+  interval: string = 'Monthly',
 ) {
   return async (
     spreadsheet: ReturnType<typeof useSpreadsheet>,
@@ -48,7 +49,7 @@ export function createSpreadsheet(
               .filter({
                 [conditionsOpKey]: filters,
                 account: acct.id,
-                date: { $lt: monthUtils.firstDayOfMonth(start) },
+                date: { $lt: getIntervalStartDate(start, interval) },
               })
               .calculate({ $sum: '$amount' }),
           ).then(({ data }) => data),
@@ -61,13 +62,13 @@ export function createSpreadsheet(
               .filter({
                 account: acct.id,
                 $and: [
-                  { date: { $gte: monthUtils.firstDayOfMonth(start) } },
-                  { date: { $lte: monthUtils.lastDayOfMonth(end) } },
+                  { date: { $gte: getIntervalStartDate(start, interval) } },
+                  { date: { $lte: getIntervalEndDate(end, interval) } },
                 ],
               })
-              .groupBy({ $month: '$date' })
+              .groupBy(getGroupByExpression(interval))
               .select([
-                { date: { $month: '$date' } },
+                { date: getGroupByExpression(interval) },
                 { amount: { $sum: '$amount' } },
               ]),
           ).then(({ data }) => data),
@@ -81,8 +82,50 @@ export function createSpreadsheet(
       }),
     );
 
-    setData(recalculate(data, start, end, locale));
+    setData(recalculate(data, start, end, locale, interval));
   };
+}
+
+function getGroupByExpression(interval: string) {
+  switch (interval) {
+    case 'Daily':
+      return { $day: '$date' }; // This groups by full date: YYYY-MM-DD
+    case 'Weekly':
+      return { $week: '$date' };
+    case 'Yearly':
+      return { $year: '$date' };
+    case 'Monthly':
+    default:
+      return { $month: '$date' };
+  }
+}
+
+function getIntervalStartDate(date: string, interval: string): string {
+  switch (interval) {
+    case 'Daily':
+      return date; // For daily, use the exact date
+    case 'Weekly':
+      return monthUtils.weekFromDate(date, '0'); // Start of week
+    case 'Yearly':
+      return monthUtils.getYearStart(date);
+    case 'Monthly':
+    default:
+      return monthUtils.firstDayOfMonth(date);
+  }
+}
+
+function getIntervalEndDate(date: string, interval: string): string {
+  switch (interval) {
+    case 'Daily':
+      return date; // For daily, use the exact date
+    case 'Weekly':
+      return monthUtils.getWeekEnd(date, '0'); // End of week
+    case 'Yearly':
+      return monthUtils.getYearEnd(date);
+    case 'Monthly':
+    default:
+      return monthUtils.lastDayOfMonth(date);
+  }
 }
 
 function recalculate(
@@ -94,15 +137,16 @@ function recalculate(
   start: string,
   end: string,
   locale: Locale,
+  interval: string = 'Monthly',
 ) {
-  const months = monthUtils.rangeInclusive(start, end);
+  const intervals = getIntervalRange(start, end, interval);
 
   const accountBalances = data.map(account => {
     // Start off with the balance at that point in time
     let balance = account.starting;
-    return months.map(month => {
-      if (account.balances[month]) {
-        balance += account.balances[month].amount;
+    return intervals.map(intervalItem => {
+      if (account.balances[intervalItem]) {
+        balance += account.balances[intervalItem].amount;
       }
       return balance;
     });
@@ -114,7 +158,7 @@ function recalculate(
   let lowestNetWorth: number | null = null;
   let highestNetWorth: number | null = null;
 
-  const graphData = months.reduce<
+  const graphData = intervals.reduce<
     Array<{
       x: string;
       y: number;
@@ -124,7 +168,7 @@ function recalculate(
       networth: string;
       date: string;
     }>
-  >((arr, month, idx) => {
+  >((arr, intervalItem, idx) => {
     let debt = 0;
     let assets = 0;
     let total = 0;
@@ -144,7 +188,7 @@ function recalculate(
       hasNegative = true;
     }
 
-    const x = d.parseISO(month + '-01');
+    const x = parseIntervalDate(intervalItem, interval);
     const change = last ? total - amountToInteger(last.y) : 0;
 
     if (arr.length === 0) {
@@ -153,13 +197,13 @@ function recalculate(
     endNetWorth = total;
 
     arr.push({
-      x: d.format(x, 'MMM ’yy', { locale }),
+      x: formatIntervalForDisplay(x, interval, locale),
       y: integerToAmount(total),
       assets: integerToCurrency(assets),
       debt: `-${integerToCurrency(debt)}`,
       change: integerToCurrency(change),
       networth: integerToCurrency(total),
-      date: d.format(x, 'MMMM yyyy', { locale }),
+      date: formatIntervalForTooltip(x, interval, locale),
     });
 
     arr.forEach(item => {
@@ -185,4 +229,60 @@ function recalculate(
     lowestNetWorth,
     highestNetWorth,
   };
+}
+
+function getIntervalRange(start: string, end: string, interval: string): string[] {
+  switch (interval) {
+    case 'Daily':
+      return monthUtils.dayRangeInclusive(start, end);
+    case 'Weekly':
+      return monthUtils.weekRangeInclusive(start, end, '0');
+    case 'Yearly':
+      return monthUtils.yearRangeInclusive(start, end);
+    case 'Monthly':
+    default:
+      return monthUtils.rangeInclusive(start, end);
+  }
+}
+
+function parseIntervalDate(intervalItem: string, interval: string): Date {
+  switch (interval) {
+    case 'Daily':
+      return d.parseISO(intervalItem);
+    case 'Weekly':
+      return d.parseISO(intervalItem);
+    case 'Yearly':
+      return d.parseISO(intervalItem + '-01-01');
+    case 'Monthly':
+    default:
+      return d.parseISO(intervalItem + '-01');
+  }
+}
+
+function formatIntervalForDisplay(date: Date, interval: string, locale: Locale): string {
+  switch (interval) {
+    case 'Daily':
+      return d.format(date, 'MM/dd', { locale });
+    case 'Weekly':
+      return d.format(date, 'MM/dd', { locale });
+    case 'Yearly':
+      return d.format(date, 'yyyy', { locale });
+    case 'Monthly':
+    default:
+      return d.format(date, "MMM ''yy", { locale });
+  }
+}
+
+function formatIntervalForTooltip(date: Date, interval: string, locale: Locale): string {
+  switch (interval) {
+    case 'Daily':
+      return d.format(date, 'MMMM d, yyyy', { locale });
+    case 'Weekly':
+      return d.format(date, 'MMM d, yyyy', { locale });
+    case 'Yearly':
+      return d.format(date, 'yyyy', { locale });
+    case 'Monthly':
+    default:
+      return d.format(date, 'MMMM yyyy', { locale });
+  }
 }
