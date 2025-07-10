@@ -12,6 +12,7 @@ import {
 } from 'loot-core/types/models';
 
 import { makeQuery } from './makeQuery';
+import { buildDateIndex } from './buildDateIndex';
 
 import { type useSpreadsheet } from '@desktop-client/hooks/useSpreadsheet';
 import { aqlQuery } from '@desktop-client/queries/aqlQuery';
@@ -113,6 +114,17 @@ export function createSpendingSpreadsheet({
     const combineAssets = [...assets, ...overlapAssets];
     const combineDebts = [...debts, ...overlapDebts];
 
+    // Pre-filter once for non-income, on-budget transactions
+    const relevantAssets = combineAssets.filter(
+      e => !e.categoryIncome && !e.accountOffBudget,
+    );
+    const relevantDebts = combineDebts.filter(
+      e => !e.categoryIncome && !e.accountOffBudget,
+    );
+
+    const assetIndex = buildDateIndex(relevantAssets);
+    const debtIndex = buildDateIndex(relevantDebts);
+
     const budgetMonth = parseInt(compare.replace('-', ''));
     const [budgets] = await Promise.all([
       aqlQuery(
@@ -177,16 +189,10 @@ export function createSpendingSpreadsheet({
             month.month === monthUtils.getMonth(intervalItem) &&
             day === offsetDay
           ) {
-            const intervalAssets = combineAssets
-              .filter(e => !e.categoryIncome && !e.accountOffBudget)
-              .filter(asset => asset.date === intervalItem)
-              .reduce((a, v) => (a = a + v.amount), 0);
+            const intervalAssets = assetIndex.get(intervalItem) ?? 0;
             perIntervalAssets += intervalAssets;
 
-            const intervalDebts = combineDebts
-              .filter(e => !e.categoryIncome && !e.accountOffBudget)
-              .filter(debt => debt.date === intervalItem)
-              .reduce((a, v) => (a = a + v.amount), 0);
+            const intervalDebts = debtIndex.get(intervalItem) ?? 0;
             perIntervalDebts += intervalDebts;
 
             totalAssets += perIntervalAssets;

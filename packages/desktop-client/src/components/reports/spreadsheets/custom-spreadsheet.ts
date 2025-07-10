@@ -19,7 +19,8 @@ import { type SyncedPrefs } from 'loot-core/types/prefs';
 
 import { calculateLegend } from './calculateLegend';
 import { filterEmptyRows } from './filterEmptyRows';
-import { filterHiddenItems } from './filterHiddenItems';
+import { applyCommonFilters } from './applyCommonFilters';
+import { buildIndex } from './buildIndex';
 import { makeQuery } from './makeQuery';
 import { recalculate } from './recalculate';
 import { sortData } from './sortData';
@@ -120,20 +121,42 @@ export function createCustomSpreadsheet({
       ).then(({ data }) => data),
     ]);
 
+    // Adjust dates for weekly grouping before any further processing
     if (interval === 'Weekly') {
-      debts = debts.map(d => {
-        return {
-          ...d,
-          date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
-        };
-      });
-      assets = assets.map(d => {
-        return {
-          ...d,
-          date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
-        };
-      });
+      assets = assets.map(d => ({
+        ...d,
+        date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
+      }));
+      debts = debts.map(d => ({
+        ...d,
+        date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
+      }));
     }
+
+    // 1) Common pre-filter once
+    const filteredAssets = applyCommonFilters(
+      assets,
+      showOffBudget,
+      showHiddenCategories,
+      showUncategorized,
+    );
+    const filteredDebts = applyCommonFilters(
+      debts,
+      showOffBudget,
+      showHiddenCategories,
+      showUncategorized,
+    );
+
+    // 2) Build in-memory index for fast look-ups
+    const groupsByCategory =
+      groupByLabel === 'category' || groupByLabel === 'categoryGroup';
+
+    const assetIndex = buildIndex(
+      filteredAssets,
+      groupByLabel,
+      groupsByCategory,
+    );
+    const debtIndex = buildIndex(filteredDebts, groupByLabel, groupsByCategory);
 
     const intervals =
       interval === 'Weekly'
@@ -147,8 +170,6 @@ export function createCustomSpreadsheet({
     let netAssets = 0;
     let netDebts = 0;
 
-    const groupsByCategory =
-      groupByLabel === 'category' || groupByLabel === 'categoryGroup';
     const intervalData = intervals.reduce(
       (arr: IntervalEntity[], intervalItem, index) => {
         let perIntervalAssets = 0;
@@ -161,38 +182,17 @@ export function createCustomSpreadsheet({
         groupByList.map(item => {
           let stackAmounts = 0;
 
-          const intervalAssets = filterHiddenItems(
-            item,
-            assets,
-            showOffBudget,
-            showHiddenCategories,
-            showUncategorized,
-            groupsByCategory,
-          )
-            .filter(
-              asset =>
-                asset.date === intervalItem &&
-                (asset[groupByLabel] === (item.id ?? null) ||
-                  (item.uncategorized_id && groupsByCategory)),
-            )
-            .reduce((a, v) => (a = a + v.amount), 0);
+          const itemKey =
+            groupsByCategory && item.uncategorized_id
+              ? item.uncategorized_id
+              : (item.id ?? null);
+
+          const intervalAssets =
+            assetIndex.get(`${intervalItem}|${itemKey}`) ?? 0;
           perIntervalAssets += intervalAssets;
 
-          const intervalDebts = filterHiddenItems(
-            item,
-            debts,
-            showOffBudget,
-            showHiddenCategories,
-            showUncategorized,
-            groupsByCategory,
-          )
-            .filter(
-              debt =>
-                debt.date === intervalItem &&
-                (debt[groupByLabel] === (item.id ?? null) ||
-                  (item.uncategorized_id && groupsByCategory)),
-            )
-            .reduce((a, v) => (a = a + v.amount), 0);
+          const intervalDebts =
+            debtIndex.get(`${intervalItem}|${itemKey}`) ?? 0;
           perIntervalDebts += intervalDebts;
 
           const netAmounts = intervalAssets + intervalDebts;
@@ -260,12 +260,9 @@ export function createCustomSpreadsheet({
       const calc = recalculate({
         item,
         intervals,
-        assets,
-        debts,
+        assetIndex,
+        debtIndex,
         groupByLabel,
-        showOffBudget,
-        showHiddenCategories,
-        showUncategorized,
         startDate,
         endDate,
       });

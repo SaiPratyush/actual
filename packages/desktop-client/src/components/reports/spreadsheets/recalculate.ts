@@ -5,22 +5,18 @@ import {
   type IntervalEntity,
 } from 'loot-core/types/models';
 
-import { filterHiddenItems } from './filterHiddenItems';
+// NOTE: This file now works with pre-built indexes; filtering is done once
+// upstream (see `applyCommonFilters`) and we no longer call `filterHiddenItems`
+// here.
 
-import {
-  type UncategorizedEntity,
-  type QueryDataEntity,
-} from '@desktop-client/components/reports/ReportOptions';
+import { type UncategorizedEntity } from '@desktop-client/components/reports/ReportOptions';
 
 type recalculateProps = {
   item: UncategorizedEntity;
   intervals: Array<string>;
-  assets: QueryDataEntity[];
-  debts: QueryDataEntity[];
+  assetIndex: Map<string, number>;
+  debtIndex: Map<string, number>;
   groupByLabel: 'category' | 'categoryGroup' | 'payee' | 'account';
-  showOffBudget?: boolean;
-  showHiddenCategories?: boolean;
-  showUncategorized?: boolean;
   startDate: string;
   endDate: string;
 };
@@ -28,55 +24,32 @@ type recalculateProps = {
 export function recalculate({
   item,
   intervals,
-  assets,
-  debts,
+  assetIndex,
+  debtIndex,
   groupByLabel,
-  showOffBudget,
-  showHiddenCategories,
-  showUncategorized,
   startDate,
   endDate,
 }: recalculateProps): GroupedEntity {
   let totalAssets = 0;
   let totalDebts = 0;
+
+  const groupsByCategory =
+    groupByLabel === 'category' || groupByLabel === 'categoryGroup';
+
+  // Resolve the lookup key once per item
+  const itemKey =
+    groupsByCategory && item.uncategorized_id
+      ? item.uncategorized_id
+      : (item.id ?? null);
+
   const intervalData = intervals.reduce(
     (arr: IntervalEntity[], intervalItem, index) => {
       const last = arr.length === 0 ? null : arr[arr.length - 1];
 
-      const groupsByCategory =
-        groupByLabel === 'category' || groupByLabel === 'categoryGroup';
-      const intervalAssets = filterHiddenItems(
-        item,
-        assets,
-        showOffBudget,
-        showHiddenCategories,
-        showUncategorized,
-        groupsByCategory,
-      )
-        .filter(
-          asset =>
-            asset.date === intervalItem &&
-            (asset[groupByLabel] === (item.id ?? null) ||
-              (item.uncategorized_id && groupsByCategory)),
-        )
-        .reduce((a, v) => (a = a + v.amount), 0);
-      totalAssets += intervalAssets;
+      const intervalAssets = assetIndex.get(`${intervalItem}|${itemKey}`) ?? 0;
+      const intervalDebts = debtIndex.get(`${intervalItem}|${itemKey}`) ?? 0;
 
-      const intervalDebts = filterHiddenItems(
-        item,
-        debts,
-        showOffBudget,
-        showHiddenCategories,
-        showUncategorized,
-        groupsByCategory,
-      )
-        .filter(
-          debt =>
-            debt.date === intervalItem &&
-            (debt[groupByLabel] === (item.id ?? null) ||
-              (item.uncategorized_id && groupsByCategory)),
-        )
-        .reduce((a, v) => (a = a + v.amount), 0);
+      totalAssets += intervalAssets;
       totalDebts += intervalDebts;
 
       const intervalTotals = intervalAssets + intervalDebts;

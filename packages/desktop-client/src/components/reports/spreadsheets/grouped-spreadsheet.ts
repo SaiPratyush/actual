@@ -6,6 +6,8 @@ import { type createCustomSpreadsheetProps } from './custom-spreadsheet';
 import { filterEmptyRows } from './filterEmptyRows';
 import { makeQuery } from './makeQuery';
 import { recalculate } from './recalculate';
+import { applyCommonFilters } from './applyCommonFilters';
+import { buildIndex } from './buildIndex';
 import { sortData } from './sortData';
 
 import {
@@ -71,20 +73,38 @@ export function createGroupedSpreadsheet({
       ).then(({ data }) => data),
     ]);
 
+    // Weekly date adjustment first
     if (interval === 'Weekly') {
-      debts = debts.map(d => {
-        return {
-          ...d,
-          date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
-        };
-      });
-      assets = assets.map(d => {
-        return {
-          ...d,
-          date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
-        };
-      });
+      debts = debts.map(d => ({
+        ...d,
+        date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
+      }));
+      assets = assets.map(d => ({
+        ...d,
+        date: monthUtils.weekFromDate(d.date, firstDayOfWeekIdx),
+      }));
     }
+
+    // 1) Common filter once
+    const filteredAssets = applyCommonFilters(
+      assets,
+      showOffBudget,
+      showHiddenCategories,
+      showUncategorized,
+    );
+    const filteredDebts = applyCommonFilters(
+      debts,
+      showOffBudget,
+      showHiddenCategories,
+      showUncategorized,
+    );
+
+    // 2) Build two indexes: by categoryGroup and by category (needed for stacked categories)
+    const assetIndexGroup = buildIndex(filteredAssets, 'categoryGroup', true);
+    const debtIndexGroup = buildIndex(filteredDebts, 'categoryGroup', true);
+
+    const assetIndexCategory = buildIndex(filteredAssets, 'category', true);
+    const debtIndexCategory = buildIndex(filteredDebts, 'category', true);
 
     const intervals =
       interval === 'Weekly'
@@ -93,50 +113,41 @@ export function createGroupedSpreadsheet({
             ReportOptions.intervalRange.get(interval) || 'rangeInclusive'
           ](startDate, endDate);
 
-    const groupedData: GroupedEntity[] = categoryGroup.map(
-      group => {
-        const grouped = recalculate({
-          item: group,
-          intervals,
-          assets,
-          debts,
-          groupByLabel: 'categoryGroup',
-          showOffBudget,
-          showHiddenCategories,
-          showUncategorized,
-          startDate,
-          endDate,
+    const groupedData: GroupedEntity[] = categoryGroup.map(group => {
+      const grouped = recalculate({
+        item: group,
+        intervals,
+        assetIndex: assetIndexGroup,
+        debtIndex: debtIndexGroup,
+        groupByLabel: 'categoryGroup',
+        startDate,
+        endDate,
+      });
+
+      const stackedCategories =
+        group.categories &&
+        group.categories.map(item => {
+          const calc = recalculate({
+            item,
+            intervals,
+            assetIndex: assetIndexCategory,
+            debtIndex: debtIndexCategory,
+            groupByLabel: 'category',
+            startDate,
+            endDate,
+          });
+          return { ...calc };
         });
 
-        const stackedCategories =
-          group.categories &&
-          group.categories.map(item => {
-            const calc = recalculate({
-              item,
-              intervals,
-              assets,
-              debts,
-              groupByLabel: 'category',
-              showOffBudget,
-              showHiddenCategories,
-              showUncategorized,
-              startDate,
-              endDate,
-            });
-            return { ...calc };
-          });
-
-        return {
-          ...grouped,
-          categories:
-            stackedCategories &&
-            stackedCategories.filter(i =>
-              filterEmptyRows({ showEmpty, data: i, balanceTypeOp }),
-            ),
-        };
-      },
-      [startDate, endDate],
-    );
+      return {
+        ...grouped,
+        categories:
+          stackedCategories &&
+          stackedCategories.filter(i =>
+            filterEmptyRows({ showEmpty, data: i, balanceTypeOp }),
+          ),
+      };
+    });
 
     const groupedDataFiltered = groupedData.filter(i =>
       filterEmptyRows({ showEmpty, data: i, balanceTypeOp }),
